@@ -1,0 +1,10 @@
+# Python 產生的快取檔案
+__pycache__/
+*.py[cod]
+
+# 本地資料庫與紀錄檔
+*.db
+*.log
+
+# Docker 與系統暫存
+.DS_Store

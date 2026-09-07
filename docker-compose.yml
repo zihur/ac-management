@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  web:
+    build: .
+    container_name: ac_fastapi_app
+    ports:
+      - "8000:8000"
+    volumes:
+      # 將當前目錄掛載進容器，你在 VS Code 改程式碼，容器內的 FastAPI 會即時生效！
+      - .:/app
