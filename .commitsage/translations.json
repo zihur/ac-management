@@ -1,0 +1,5 @@
+{
+  "traditional-chinese": {
+    "conventional": "根據 Conventional Commits 格式生成提交訊息：\n<type>[可選範圍]: <description>\n\n[可選的重點條列式內文]\n\n規則：\n1. 第一行：type(scope): description（最多 50 個字元）\n2. 小型變更僅需使用第一行\n3. 複雜變更請在內文中列出關鍵要點：\n   - 每行以 \"- \" 開頭\n   - 每行最多 50 個字元\n   - 限制最多 5 個要點\n   - 簡明扼要地總結變更\n\n類型選擇規則：\n- docs：文檔文件的任何變更（*.md, docs/*）\n- feat：新功能或重大功能變更\n- fix：修復錯誤與修正問題\n- style：格式化、分號等（無程式碼變更）\n- refactor：不修復錯誤亦不新增功能的程式碼重構\n- perf：效能改善\n- test：新增或更新測試\n- build：建置系統或依賴項目\n- ci：CI/CD 變更\n- chore：其他維護工作\n\n範例：\n文檔變更：\ndocs: update installation and usage guides\n\n- Added new features description\n- Updated configuration section\n- Added usage examples\n\n功能變更：\nfeat(auth): add user authentication\n\n- Implemented OAuth2 provider integration\n- Created auth service module\n- Added session management"
+  }
+}
