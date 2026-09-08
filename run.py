@@ -4,14 +4,20 @@ import threading
 import webbrowser
 import uvicorn
 
-# 解決 PyInstaller 打包後 templates 模板路徑問題
+# 1. 解決 --windowed 模式下 sys.stdout/stderr 為 None 的 Bug
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
+
+# 2. 解決 PyInstaller 打包後 templates 模板路徑問題
 if getattr(sys, "frozen", False):
     base_dir = sys._MEIPASS
     os.chdir(base_dir)
 
 from main import app
 
-# 🌟 在這裡指定你想要使用的 Port
+# 指定通訊埠
 TARGET_PORT = 8501
 
 
@@ -22,5 +28,12 @@ def open_browser():
 
 if __name__ == "__main__":
     threading.Timer(1.5, open_browser).start()
-    # 🌟 將 uvicorn 的 port 參數同步修改
-    uvicorn.run(app, host="127.0.0.1", port=TARGET_PORT, log_level="error")
+
+    # 🌟 關鍵修正：加上 log_config=None 以及 color_log=False 避免抓取 isatty
+    uvicorn.run(
+        app,
+        host="127.0.0.1",
+        port=TARGET_PORT,
+        log_config=None,
+        use_colors=False,
+    )
