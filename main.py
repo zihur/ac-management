@@ -9,21 +9,48 @@ from database import get_db_connection, init_db
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 
-# 容器啟動時自動初始化 SQLite 資料庫
 @app.on_event("startup")
 def startup_event():
     init_db()
 
-# 首頁 (顯示頁面)
+# 1. 首頁路由：兼具列表展示與關鍵字搜尋
 @app.get("/", response_class=HTMLResponse)
-def home(request: Request, message: Optional[str] = None, error: Optional[str] = None):
+def home(
+    request: Request, 
+    keyword: Optional[str] = None, 
+    message: Optional[str] = None, 
+    error: Optional[str] = None
+):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # 如果有輸入關鍵字，執行 LIKE 模糊搜尋 (同時比對品牌與型號)
+    if keyword:
+        search_pattern = f"%{keyword}%"
+        cursor.execute(
+            "SELECT * FROM ac_models WHERE brand LIKE ? OR model_number LIKE ? ORDER BY id DESC",
+            (search_pattern, search_pattern)
+        )
+    else:
+        # 沒有關鍵字則列出全部資料 (按 ID 倒序排列，最新建立的在最上面)
+        cursor.execute("SELECT * FROM ac_models ORDER BY id DESC")
+
+    items = cursor.fetchall()
+    conn.close()
+
     return templates.TemplateResponse(
         request=request, 
         name="index.html", 
-        context={"title": "冷氣型號管理系統", "message": message, "error": error}
+        context={
+            "title": "冷氣型號管理系統", 
+            "items": items,          # 傳送查詢出來的資料清單
+            "keyword": keyword,      # 傳回關鍵字，讓搜尋框能保留輸入的值
+            "message": message, 
+            "error": error
+        }
     )
 
-# 處理表單提交 (POST)
+# 2. 新增資料路由
 @app.post("/add")
 def add_ac_model(
     brand: str = Form(...),
@@ -45,5 +72,4 @@ def add_ac_model(
     finally:
         conn.close()
 
-    # 重定向回首頁 (HTTP 303 防止使用者按 F5 重複提交 POST)
     return RedirectResponse(url=redirect_url, status_code=status.HTTP_303_SEE_OTHER)
