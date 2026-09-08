@@ -27,8 +27,7 @@ def _heartbeat_enabled() -> bool:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    if _heartbeat_enabled():
-        threading.Thread(target=heartbeat_monitor, daemon=True).start()
+    start_heartbeat_monitor()
     yield
 
 
@@ -40,6 +39,8 @@ templates = Jinja2Templates(directory="templates")
 # ---------------------------------------------------------
 last_heartbeat = time.time()
 _shutdown_callback: Callable[[], None] | None = None
+_monitor_started = False
+_monitor_lock = threading.Lock()
 
 
 def register_shutdown(callback: Callable[[], None]) -> None:
@@ -48,13 +49,44 @@ def register_shutdown(callback: Callable[[], None]) -> None:
     _shutdown_callback = callback
 
 
+def start_heartbeat_monitor() -> None:
+    """啟動心跳監控（lifespan 與 run.py 皆可呼叫，僅啟動一次）。"""
+    global _monitor_started, last_heartbeat
+    if not _heartbeat_enabled():
+        return
+    with _monitor_lock:
+        if _monitor_started:
+            return
+        _monitor_started = True
+        last_heartbeat = time.time()
+        threading.Thread(
+            target=heartbeat_monitor,
+            daemon=True,
+            name="heartbeat_monitor",
+        ).start()
+
+
+def _hard_exit() -> None:
+    """Windows windowed exe 無控制台，SIGINT / 延遲 Timer 皆不可靠。"""
+    try:
+        if _shutdown_callback is not None:
+            _shutdown_callback()
+    except Exception:
+        pass
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.kernel32.TerminateProcess(
+                ctypes.windll.kernel32.GetCurrentProcess(), 0
+            )
+        except Exception:
+            pass
+    os._exit(0)
+
+
 def _shutdown_process() -> None:
-    """關閉背景程序。Windows windowed exe 無控制台，SIGINT 無效。"""
-    print("🛑 檢測到瀏覽器分頁已關閉，系統正在自動關閉背景程序...")
-    if _shutdown_callback is not None:
-        _shutdown_callback()
-    # 若 uvicorn 未在時限內結束（常見於 --windowed exe），強制退出
-    threading.Timer(2.0, os._exit, args=(0,)).start()
+    """關閉背景程序。"""
+    _hard_exit()
 
 
 def heartbeat_monitor():

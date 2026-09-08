@@ -1,6 +1,11 @@
+import os
+import sys
 import sqlite3
 
-DB_NAME = "air_conditioner.db"
+if getattr(sys, "frozen", False):
+    DB_NAME = os.path.join(os.path.dirname(sys.executable), "air_conditioner.db")
+else:
+    DB_NAME = "air_conditioner.db"
 
 def get_db_connection():
     conn = sqlite3.connect(DB_NAME)

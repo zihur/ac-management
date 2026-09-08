@@ -18,7 +18,7 @@ if getattr(sys, "frozen", False):
 # 桌面版啟用心跳自動關閉；Docker 等環境不設定此變數即維持關閉
 os.environ.setdefault("ENABLE_HEARTBEAT", "1")
 
-from main import app, register_shutdown
+from main import app, register_shutdown, start_heartbeat_monitor
 
 # 指定通訊埠
 TARGET_PORT = 8501
@@ -40,5 +40,6 @@ def open_browser():
 
 
 if __name__ == "__main__":
+    start_heartbeat_monitor()
     threading.Timer(1.5, open_browser).start()
     server.run()
