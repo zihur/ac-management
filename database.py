@@ -1,11 +1,30 @@
 import os
+import shutil
 import sys
 import sqlite3
 
-if getattr(sys, "frozen", False):
-    DB_NAME = os.path.join(os.path.dirname(sys.executable), "air_conditioner.db")
-else:
-    DB_NAME = "air_conditioner.db"
+
+def _resolve_db_path() -> str:
+    if not getattr(sys, "frozen", False):
+        return "air_conditioner.db"
+
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        local_app_data = os.path.join(os.path.expanduser("~"), "AppData", "Local")
+
+    data_dir = os.path.join(local_app_data, "AC_Management")
+    os.makedirs(data_dir, exist_ok=True)
+    db_path = os.path.join(data_dir, "air_conditioner.db")
+
+    # 從舊版 exe 同目錄自動搬移資料（若存在）
+    legacy_path = os.path.join(os.path.dirname(sys.executable), "air_conditioner.db")
+    if os.path.isfile(legacy_path) and not os.path.isfile(db_path):
+        shutil.copy2(legacy_path, db_path)
+
+    return db_path
+
+
+DB_NAME = _resolve_db_path()
 
 def get_db_connection():
     conn = sqlite3.connect(DB_NAME)
