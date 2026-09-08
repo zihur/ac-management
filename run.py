@@ -18,10 +18,20 @@ if getattr(sys, "frozen", False):
 # 桌面版啟用心跳自動關閉；Docker 等環境不設定此變數即維持關閉
 os.environ.setdefault("ENABLE_HEARTBEAT", "1")
 
-from main import app
+from main import app, register_shutdown
 
 # 指定通訊埠
 TARGET_PORT = 8501
+
+config = uvicorn.Config(
+    app,
+    host="127.0.0.1",
+    port=TARGET_PORT,
+    log_config=None,
+    use_colors=False,
+)
+server = uvicorn.Server(config)
+register_shutdown(lambda: setattr(server, "should_exit", True))
 
 
 def open_browser():
@@ -31,12 +41,4 @@ def open_browser():
 
 if __name__ == "__main__":
     threading.Timer(1.5, open_browser).start()
-
-    # 🌟 關鍵修正：加上 log_config=None 以及 color_log=False 避免抓取 isatty
-    uvicorn.run(
-        app,
-        host="127.0.0.1",
-        port=TARGET_PORT,
-        log_config=None,
-        use_colors=False,
-    )
+    server.run()

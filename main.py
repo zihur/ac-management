@@ -1,8 +1,8 @@
 import os
-import signal
 import sys
 import time
 import threading
+from typing import Callable
 import sqlite3
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -39,6 +39,23 @@ templates = Jinja2Templates(directory="templates")
 # 💓 心跳包 (Heartbeat) 自動關閉機制
 # ---------------------------------------------------------
 last_heartbeat = time.time()
+_shutdown_callback: Callable[[], None] | None = None
+
+
+def register_shutdown(callback: Callable[[], None]) -> None:
+    """由 run.py 註冊 uvicorn 優雅關閉；未註冊時改走 os._exit。"""
+    global _shutdown_callback
+    _shutdown_callback = callback
+
+
+def _shutdown_process() -> None:
+    """關閉背景程序。Windows windowed exe 無控制台，SIGINT 無效。"""
+    print("🛑 檢測到瀏覽器分頁已關閉，系統正在自動關閉背景程序...")
+    if _shutdown_callback is not None:
+        _shutdown_callback()
+    # 若 uvicorn 未在時限內結束（常見於 --windowed exe），強制退出
+    threading.Timer(2.0, os._exit, args=(0,)).start()
+
 
 def heartbeat_monitor():
     """背景線程：每 3 秒檢查一次心跳，超過 8 秒沒收到心跳就自動關閉行程"""
@@ -46,9 +63,7 @@ def heartbeat_monitor():
     while True:
         time.sleep(3)
         if time.time() - last_heartbeat > 8:
-            print("🛑 檢測到瀏覽器分頁已關閉，系統正在自動關閉背景程序...")
-            # 傳送 SIGINT 信號給目前進程（效果同按下 Ctrl+C）
-            os.kill(os.getpid(), signal.SIGINT)
+            _shutdown_process()
             break
 
 @app.post("/api/ping")
