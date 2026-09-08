@@ -1,17 +1,22 @@
 import sqlite3
+from contextlib import asynccontextmanager
 from typing import Optional
+
 from fastapi import FastAPI, Request, Form, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from database import get_db_connection, init_db
 
-app = FastAPI()
-templates = Jinja2Templates(directory="templates")
 
-@app.on_event("startup")
-def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     init_db()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
+templates = Jinja2Templates(directory="templates")
 
 # 1. 首頁：列表、搜尋，以及支援帶入待編輯項目 (edit_id)
 @app.get("/", response_class=HTMLResponse)
