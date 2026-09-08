@@ -27,5 +27,5 @@
 
 ### 1. 複製專案 (Clone)
 ```bash
-git clone [https://github.com/你的帳號/ac_management.git](https://github.com/你的帳號/ac_management.git)
-cd ac_management
+git clone [https://github.com/你的帳號/ac-management.git](https://github.com/你的帳號/ac-management.git)
+cd ac-management
