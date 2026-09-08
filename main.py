@@ -13,7 +13,7 @@ templates = Jinja2Templates(directory="templates")
 def startup_event():
     init_db()
 
-# 1. 首頁路由：兼具列表展示與關鍵字搜尋
+# 1. 首頁：讀取品牌列表，並 JOIN 查詢冷氣型號
 @app.get("/", response_class=HTMLResponse)
 def home(
     request: Request, 
@@ -24,16 +24,24 @@ def home(
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # 如果有輸入關鍵字，執行 LIKE 模糊搜尋 (同時比對品牌與型號)
+    # 取得所有品牌供選單 <select> 使用
+    cursor.execute("SELECT * FROM brands ORDER BY id ASC")
+    brands = cursor.fetchall()
+
+    # 查詢冷氣型號 (JOIN 品牌表)
+    base_sql = """
+        SELECT ac.id, b.name as brand_name, ac.model_number, ac.cooling_capacity, ac.notes
+        FROM ac_models ac
+        JOIN brands b ON ac.brand_id = b.id
+    """
+
     if keyword:
         search_pattern = f"%{keyword}%"
-        cursor.execute(
-            "SELECT * FROM ac_models WHERE brand LIKE ? OR model_number LIKE ? ORDER BY id DESC",
-            (search_pattern, search_pattern)
-        )
+        sql = base_sql + " WHERE b.name LIKE ? OR ac.model_number LIKE ? ORDER BY ac.id DESC"
+        cursor.execute(sql, (search_pattern, search_pattern))
     else:
-        # 沒有關鍵字則列出全部資料 (按 ID 倒序排列，最新建立的在最上面)
-        cursor.execute("SELECT * FROM ac_models ORDER BY id DESC")
+        sql = base_sql + " ORDER BY ac.id DESC"
+        cursor.execute(sql)
 
     items = cursor.fetchall()
     conn.close()
@@ -43,17 +51,18 @@ def home(
         name="index.html", 
         context={
             "title": "冷氣型號管理系統", 
-            "items": items,          # 傳送查詢出來的資料清單
-            "keyword": keyword,      # 傳回關鍵字，讓搜尋框能保留輸入的值
+            "items": items,
+            "brands": brands,        # 傳送品牌選單資料
+            "keyword": keyword,
             "message": message, 
             "error": error
         }
     )
 
-# 2. 新增資料路由
+# 2. 新增冷氣型號
 @app.post("/add")
 def add_ac_model(
-    brand: str = Form(...),
+    brand_id: int = Form(...),
     model_number: str = Form(...),
     cooling_capacity: float = Form(...),
     notes: Optional[str] = Form(None)
@@ -62,13 +71,29 @@ def add_ac_model(
     cursor = conn.cursor()
     try:
         cursor.execute(
-            "INSERT INTO ac_models (brand, model_number, cooling_capacity, notes) VALUES (?, ?, ?, ?)",
-            (brand, model_number, cooling_capacity, notes)
+            "INSERT INTO ac_models (brand_id, model_number, cooling_capacity, notes) VALUES (?, ?, ?, ?)",
+            (brand_id, model_number, cooling_capacity, notes)
         )
         conn.commit()
         redirect_url = f"/?message=成功新增型號：{model_number}"
     except sqlite3.IntegrityError:
         redirect_url = f"/?error=型號 {model_number} 已存在，請勿重複新增！"
+    finally:
+        conn.close()
+
+    return RedirectResponse(url=redirect_url, status_code=status.HTTP_303_SEE_OTHER)
+
+# 3. 快速新增新品牌
+@app.post("/add-brand")
+def add_brand(brand_name: str = Form(...)):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO brands (name) VALUES (?)", (brand_name.strip(),))
+        conn.commit()
+        redirect_url = f"/?message=成功新增品牌：{brand_name}"
+    except sqlite3.IntegrityError:
+        redirect_url = f"/?error=品牌 {brand_name} 已存在！"
     finally:
         conn.close()
 
