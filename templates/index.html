@@ -129,5 +129,14 @@
             </tbody>
         </table>
     </div>
+    <script>
+        // 1. 打開頁面時立刻發送一次心跳，刷新後端時間
+        fetch('/api/ping', { method: 'POST' }).catch(() => {});
+
+        // 2. 每 3000 毫秒 (3秒) 定時向後端報平安
+        setInterval(() => {
+            fetch('/api/ping', { method: 'POST' }).catch(() => {});
+        }, 3000);
+    </script>
 </body>
 </html>

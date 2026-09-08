@@ -15,6 +15,9 @@ if getattr(sys, "frozen", False):
     base_dir = sys._MEIPASS
     os.chdir(base_dir)
 
+# 桌面版啟用心跳自動關閉；Docker 等環境不設定此變數即維持關閉
+os.environ.setdefault("ENABLE_HEARTBEAT", "1")
+
 from main import app
 
 # 指定通訊埠

@@ -1,22 +1,62 @@
+import os
+import signal
+import sys
+import time
+import threading
 import sqlite3
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, Request, Form, status
+from fastapi import FastAPI, Request, Form, status, BackgroundTasks
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from database import get_db_connection, init_db
 
 
+def _heartbeat_enabled() -> bool:
+    """桌面 .exe 模式啟用心跳；Docker / 一般 uvicorn 預設關閉。"""
+    flag = os.environ.get("ENABLE_HEARTBEAT", "").lower()
+    if flag in ("1", "true", "yes"):
+        return True
+    if flag in ("0", "false", "no"):
+        return False
+    return getattr(sys, "frozen", False)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    if _heartbeat_enabled():
+        threading.Thread(target=heartbeat_monitor, daemon=True).start()
     yield
 
 
 app = FastAPI(lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")
+
+# ---------------------------------------------------------
+# 💓 心跳包 (Heartbeat) 自動關閉機制
+# ---------------------------------------------------------
+last_heartbeat = time.time()
+
+def heartbeat_monitor():
+    """背景線程：每 3 秒檢查一次心跳，超過 8 秒沒收到心跳就自動關閉行程"""
+    global last_heartbeat
+    while True:
+        time.sleep(3)
+        if time.time() - last_heartbeat > 8:
+            print("🛑 檢測到瀏覽器分頁已關閉，系統正在自動關閉背景程序...")
+            # 傳送 SIGINT 信號給目前進程（效果同按下 Ctrl+C）
+            os.kill(os.getpid(), signal.SIGINT)
+            break
+
+@app.post("/api/ping")
+def ping():
+    """前端心跳接收 API"""
+    global last_heartbeat
+    last_heartbeat = time.time()
+    return {"status": "alive"}
 
 # 1. 首頁：列表、搜尋，以及支援帶入待編輯項目 (edit_id)
 @app.get("/", response_class=HTMLResponse)
