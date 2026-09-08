@@ -3,7 +3,10 @@ name: Build Windows Exe
 on:
   push:
     tags:
-      - 'v*' # 當 Push 的 Tag 是 v 開頭時觸發 (例如 v1.0.0)
+      - 'v*'
+
+permissions:
+  contents: write
 
 jobs:
   build-windows:
@@ -14,7 +17,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: 2. 安裝 uv 套件管理工具
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v5  # 升級至 v5
 
       - name: 3. 設定 Python 3.11 環境
         run: uv python install 3.11
@@ -28,7 +31,7 @@ jobs:
           pyinstaller --noconfirm --onefile --windowed --add-data "templates;templates" --name "AC_Management" run.py
 
       - name: 6. 自動發布 Release 並附上 exe 下載檔
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2  # 升級至 v2
         with:
           files: dist/AC_Management.exe
         env:
