@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir fastapi uvicorn jinja2 python-multipart
+RUN pip install --no-cache-dir fastapi uvicorn jinja2 python-multipart itsdangerous
 
 EXPOSE 8000
 

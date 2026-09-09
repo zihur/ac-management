@@ -7,7 +7,7 @@
     <style>
         * { box-sizing: border-box; }
         body { font-family: sans-serif; max-width: 1100px; margin: 30px auto; padding: 20px; background-color: #f8f9fa; }
-        h1, h2, h3 { color: #2c3e50; }
+        h1, h2 { color: #2c3e50; }
         .box { background: white; border: 1px solid #ddd; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
         .form-group { margin-bottom: 12px; }
         label { display: block; margin-bottom: 5px; font-weight: bold; }
@@ -21,23 +21,22 @@
         button.search-btn { background-color: #2980b9; }
         button.brand-btn { background-color: #8e44ad; padding: 8px 12px; font-size: 14px; }
         button.delete-btn { background-color: #c0392b; padding: 4px 8px; font-size: 13px; }
-        button.yearly-btn { background-color: #16a085; padding: 4px 8px; font-size: 13px; }
         a.edit-link { background-color: #f39c12; color: white; padding: 4px 8px; border-radius: 4px; text-decoration: none; font-size: 13px; display: inline-block; }
         a.cancel-link { color: #7f8c8d; text-decoration: none; margin-left: 10px; }
         .msg { padding: 10px; background-color: #d4edda; color: #155724; border-radius: 4px; margin-bottom: 15px; }
         .error { padding: 10px; background-color: #f8d7da; color: #721c24; border-radius: 4px; margin-bottom: 15px; }
         .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-        table { width: 100%; border-collapse: collapse; margin-top: 15px; min-width: 640px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; min-width: 720px; }
         th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
         th { background-color: #f2f2f2; white-space: nowrap; }
         tr:nth-child(even) { background-color: #f9f9f9; }
         .actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
         .brand-tag { background: #e8f8f5; color: #117a65; padding: 2px 6px; border-radius: 4px; font-size: 14px; }
+        .year-tag { background: #ebf5fb; color: #1a5276; padding: 2px 6px; border-radius: 4px; font-size: 14px; font-weight: bold; }
         .price { font-weight: bold; color: #c0392b; }
         .discount-preview { margin-top: 8px; padding: 8px 12px; background: #fef9e7; border-radius: 4px; color: #7d6608; font-weight: bold; }
         .year-filter { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 15px; }
         .year-filter select { width: auto; min-width: 100px; }
-        .yearly-section { margin-top: 20px; padding-top: 20px; border-top: 2px dashed #ddd; }
         .muted { color: #888; }
         .search-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
         .search-row input[type="text"] { flex: 1 1 200px; min-width: 0; }
@@ -48,7 +47,6 @@
             background: #ecf0f1; border: 1px solid #ccc; border-left: none;
             border-radius: 0 4px 4px 0; color: #555; white-space: nowrap;
         }
-        .section-title { margin: 16px 0 10px; font-size: 1rem; color: #34495e; }
         .discount-type-row { margin-bottom: 10px; }
         .hidden-field { display: none; }
         @media (max-width: 640px) {
@@ -64,241 +62,137 @@
     {% if message %}<div class="msg">{{ message }}</div>{% endif %}
     {% if error %}<div class="error">{{ error }}</div>{% endif %}
 
-    <!-- 1. 型號主檔表單 -->
+    {% set draft = form_draft if form_draft else {} %}
+    {% set is_edit = edit_item is not none %}
+    {% set fd = draft if draft else {} %}
+    {% set src = edit_item if is_edit and not draft else none %}
+
     <div class="box">
-        {% if edit_item %}
+        {% if is_edit %}
             <h2>✏️ 編輯冷氣資料</h2>
             <form action="/update/{{ edit_item.id }}" method="post">
-                <input type="hidden" name="year" value="{{ filter_year }}">
-                {% if keyword %}<input type="hidden" name="keyword" value="{{ keyword }}">{% endif %}
         {% else %}
             <h2>➕ 新增冷氣資料</h2>
             <form action="/add" method="post">
-                <input type="hidden" name="year" value="{{ filter_year }}">
-                {% if keyword %}<input type="hidden" name="keyword" value="{{ keyword }}">{% endif %}
         {% endif %}
+            <input type="hidden" name="filter_year" value="{{ filter_year_param }}">
+            {% if keyword %}<input type="hidden" name="keyword" value="{{ keyword }}">{% endif %}
+
             <div class="form-row">
                 <div>
                     <label>品牌：</label>
                     <select name="brand_id" required>
-                        <option value="" disabled {% if not edit_item %}selected{% endif %}>請選擇品牌...</option>
+                        <option value="" disabled {% if not is_edit and not fd %}selected{% endif %}>請選擇品牌...</option>
                         {% for b in brands %}
-                            <option value="{{ b.id }}" {% if edit_item and edit_item.brand_id == b.id %}selected{% endif %}>{{ b.name }}</option>
+                            {% set sel_brand = fd.brand_id if fd.brand_id is defined else (src.brand_id if src else none) %}
+                            <option value="{{ b.id }}" {% if sel_brand == b.id %}selected{% endif %}>{{ b.name }}</option>
                         {% endfor %}
                     </select>
                 </div>
                 <div>
                     <label>型號：</label>
-                    <input type="text" name="model_number" value="{{ edit_item.model_number if edit_item else '' }}" placeholder="例如：RAC-28YB" required>
+                    <input type="text" name="model_number"
+                        value="{{ fd.model_number if fd.model_number is defined else (src.model_number if src else '') }}"
+                        placeholder="例如：RAC-28YB" required>
+                </div>
+                <div>
+                    <label>年份：</label>
+                    <input type="number" name="year" min="2000" max="2100"
+                        value="{{ fd.year if fd.year is defined else (src.year if src else (filter_year if not filter_all else current_year)) }}"
+                        required>
                 </div>
                 <div>
                     <label>冷房能力 (kW)：</label>
-                    <input type="number" step="0.1" name="cooling_capacity" value="{{ edit_item.cooling_capacity if edit_item else '' }}" placeholder="例如：2.8" required>
+                    <input type="number" step="0.1" name="cooling_capacity"
+                        value="{{ fd.cooling_capacity if fd.cooling_capacity is defined else (src.cooling_capacity if src else '') }}"
+                        placeholder="例如：2.8" required>
                 </div>
             </div>
-            <div class="form-group">
+
+            <div class="form-row">
+                <div>
+                    <label>官方零售價（元）：</label>
+                    <input type="number" name="official_retail_price" id="official_retail_price" step="1" min="1"
+                        value="{{ fd.official_retail_price if fd.official_retail_price is defined else (src.official_retail_price|int if src else '') }}"
+                        placeholder="例如：30000" required>
+                </div>
+                <div class="discount-type-row">
+                    <label>優惠方式：</label>
+                    {% set discount_type_val = fd.discount_type if fd.discount_type is defined else (src.discount_type if src else 'percent') %}
+                    <select name="discount_type" id="discount_type">
+                        <option value="percent" {% if discount_type_val != 'fixed' %}selected{% endif %}>折數（例如 85 折）</option>
+                        <option value="fixed" {% if discount_type_val == 'fixed' %}selected{% endif %}>固定扣款（例如扣 3000 元）</option>
+                    </select>
+                </div>
+                <div id="discount_percent_wrap" class="{% if discount_type_val == 'fixed' %}hidden-field{% endif %}">
+                    <label>折數：</label>
+                    <div class="input-with-suffix">
+                        <input type="number" name="discount_percent" id="discount_percent" step="1" min="1" max="100"
+                            value="{{ fd.discount_percent if fd.discount_percent is defined else ((src.discount_ratio * 100)|round|int if src and src.discount_type == 'percent' else '') }}"
+                            placeholder="85">
+                        <span class="input-suffix">折</span>
+                    </div>
+                    <small class="muted">直接輸入數字，例如 85 表示 85 折</small>
+                </div>
+                <div id="discount_amount_wrap" class="{% if discount_type_val != 'fixed' %}hidden-field{% endif %}">
+                    <label>扣減金額（元）：</label>
+                    <input type="number" name="discount_amount" id="discount_amount" step="1" min="1"
+                        value="{{ fd.discount_amount if fd.discount_amount is defined else (src.discount_amount|int if src and src.discount_type == 'fixed' and src.discount_amount is not none else '') }}"
+                        placeholder="例如：3000">
+                    <small class="muted">從官方零售價直接扣減的固定金額</small>
+                </div>
+                <div>
+                    <label>CADR (m³/h)：</label>
+                    <input type="number" name="cadr" step="0.1" min="0"
+                        value="{{ fd.cadr if fd.cadr is defined else (src.cadr if src and src.cadr is not none else '') }}"
+                        placeholder="選填">
+                </div>
+            </div>
+
+            <div class="discount-preview" id="discount_price_preview">折扣價：—</div>
+
+            <div class="form-group" style="margin-top: 12px;">
                 <label>備註：</label>
-                <textarea name="notes" placeholder="例如：適用 4-5 坪、R32冷媒">{{ edit_item.notes if edit_item and edit_item.notes else '' }}</textarea>
+                <textarea name="notes" placeholder="例如：適用 4-5 坪、R32冷媒">{{ fd.notes if fd.notes is defined else (src.notes if src and src.notes else '') }}</textarea>
             </div>
 
-            {% if not edit_item %}
-            <div class="yearly-section" style="margin-top: 16px; padding-top: 16px;">
-                <h3 class="section-title">📅 年度資料（選填，可一併建立）</h3>
-                <div class="form-row">
-                    <div>
-                        <label>年份：</label>
-                        <input type="number" name="data_year" min="2000" max="2100" value="{{ filter_year }}" placeholder="例如：2026">
-                    </div>
-                    <div>
-                        <label>官方零售價（元）：</label>
-                        <input type="number" name="official_retail_price" id="add_official_retail_price" step="1" min="1" placeholder="例如：30000">
-                    </div>
-                    <div class="discount-type-row">
-                        <label>優惠方式：</label>
-                        <select name="discount_type" id="add_discount_type">
-                            <option value="percent" selected>折數（例如 85 折）</option>
-                            <option value="fixed">固定扣款（例如扣 3000 元）</option>
-                        </select>
-                    </div>
-                    <div id="add_discount_percent_wrap">
-                        <label>折數：</label>
-                        <div class="input-with-suffix">
-                            <input type="number" name="discount_percent" id="add_discount_percent" step="1" min="1" max="100" placeholder="85">
-                            <span class="input-suffix">折</span>
-                        </div>
-                        <small class="muted">直接輸入數字，例如 85 表示 85 折</small>
-                    </div>
-                    <div id="add_discount_amount_wrap" class="hidden-field">
-                        <label>扣減金額（元）：</label>
-                        <input type="number" name="discount_amount" id="add_discount_amount" step="1" min="1" placeholder="例如：3000">
-                        <small class="muted">從官方零售價直接扣減的固定金額</small>
-                    </div>
-                    <div>
-                        <label>CADR (m³/h)：</label>
-                        <input type="number" name="cadr" step="0.1" min="0" placeholder="選填">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>年度備註：</label>
-                    <textarea name="yearly_notes" placeholder="該年度特殊說明（選填）"></textarea>
-                </div>
-                <div class="discount-preview" id="add_discount_price_preview">折扣價：—</div>
-            </div>
-            {% endif %}
-
-            {% if edit_item %}
-                <button type="submit" class="update-btn">儲存型號資料</button>
-                <a href="/?year={{ filter_year }}{% if keyword %}&keyword={{ keyword }}{% endif %}" class="cancel-link">取消編輯</a>
+            {% if is_edit %}
+                <button type="submit" class="update-btn">儲存資料</button>
+                <a href="/?year={{ filter_year_param }}{% if keyword %}&keyword={{ keyword }}{% endif %}" class="cancel-link">取消編輯</a>
             {% else %}
-                <button type="submit">儲存資料</button>
+                <button type="submit">新增資料</button>
             {% endif %}
         </form>
 
         <details style="margin-top: 15px; background: #f0f3f4; padding: 10px; border-radius: 4px;">
             <summary style="cursor: pointer; font-weight: bold; color: #7f8c8d;">➕ 找不到品牌？點此新增新品牌</summary>
             <form action="/add-brand" method="post" class="search-row" style="margin-top: 10px;">
-                <input type="hidden" name="year" value="{{ filter_year }}">
+                <input type="hidden" name="filter_year" value="{{ filter_year_param }}">
                 {% if keyword %}<input type="hidden" name="keyword" value="{{ keyword }}">{% endif %}
-                {% if edit_item %}<input type="hidden" name="edit_id" value="{{ edit_item.id }}">{% endif %}
+                {% if is_edit %}<input type="hidden" name="edit_id" value="{{ edit_item.id }}">{% endif %}
                 <input type="text" name="brand_name" placeholder="輸入全新品牌名稱 (如: 冰點)" required>
                 <button type="submit" class="brand-btn">新增品牌</button>
             </form>
         </details>
-
-        {% if edit_item %}
-        <!-- 2. 歷年資料管理（方案 B） -->
-        <div class="yearly-section">
-            <h2>📅 歷年資料管理 — {{ edit_item.model_number }}</h2>
-
-            <div class="table-wrap">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>年份</th>
-                            <th>官方零售價</th>
-                            <th>優惠</th>
-                            <th>折扣價</th>
-                            <th>CADR (m³/h)</th>
-                            <th>備註</th>
-                            <th style="width: 120px;">操作</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for yr in yearly_records %}
-                        <tr>
-                            <td><strong>{{ yr.year }}</strong></td>
-                            <td>{{ "{:,.0f}".format(yr.official_retail_price) }} 元</td>
-                            <td>{{ format_discount_label(yr.discount_type, yr.discount_ratio, yr.discount_amount) }}</td>
-                            <td class="price">{{ "{:,.0f}".format(calc_discount_price(yr.official_retail_price, yr.discount_type, yr.discount_ratio, yr.discount_amount)) }} 元</td>
-                            <td>{{ yr.cadr if yr.cadr is not none else '-' }}</td>
-                            <td>{{ yr.notes or '-' }}</td>
-                            <td>
-                                <div class="actions">
-                                    <a href="/?edit_id={{ edit_item.id }}&edit_yearly_id={{ yr.id }}&year={{ filter_year }}{% if keyword %}&keyword={{ keyword }}{% endif %}" class="edit-link">編輯</a>
-                                    <form action="/yearly/delete/{{ yr.id }}" method="post" onsubmit="return confirm('確定要刪除 {{ yr.year }} 年度資料嗎？');" style="margin: 0;">
-                                        <input type="hidden" name="ac_model_id" value="{{ edit_item.id }}">
-                                        <input type="hidden" name="filter_year" value="{{ filter_year }}">
-                                        {% if keyword %}<input type="hidden" name="keyword" value="{{ keyword }}">{% endif %}
-                                        <button type="submit" class="delete-btn">刪除</button>
-                                    </form>
-                                </div>
-                            </td>
-                        </tr>
-                        {% else %}
-                        <tr>
-                            <td colspan="7" style="text-align: center; color: #888; padding: 16px;">尚無歷年資料，請於下方新增</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-
-            <h3 style="margin-top: 20px;">{% if edit_yearly %}✏️ 編輯 {{ edit_yearly.year }} 年度資料{% else %}➕ 新增年度資料{% endif %}</h3>
-            {% if edit_yearly %}
-            <form action="/yearly/update/{{ edit_yearly.id }}" method="post" id="yearly-form">
-                <input type="hidden" name="ac_model_id" value="{{ edit_item.id }}">
-                <input type="hidden" name="filter_year" value="{{ filter_year }}">
-                {% if keyword %}<input type="hidden" name="keyword" value="{{ keyword }}">{% endif %}
-            {% else %}
-            <form action="/models/{{ edit_item.id }}/yearly/add" method="post" id="yearly-form">
-                <input type="hidden" name="filter_year" value="{{ filter_year }}">
-                {% if keyword %}<input type="hidden" name="keyword" value="{{ keyword }}">{% endif %}
-            {% endif %}
-                <div class="form-row">
-                    <div>
-                        <label>年份：</label>
-                        <input type="number" name="year" id="yearly_year" min="2000" max="2100"
-                            value="{{ edit_yearly.year if edit_yearly else current_year }}" required>
-                    </div>
-                    <div>
-                        <label>官方零售價（元）：</label>
-                        <input type="number" name="official_retail_price" id="official_retail_price" step="1" min="1"
-                            value="{{ edit_yearly.official_retail_price|int if edit_yearly else '' }}" placeholder="例如：30000" required>
-                    </div>
-                    <div class="discount-type-row">
-                        <label>優惠方式：</label>
-                        <select name="discount_type" id="discount_type">
-                            <option value="percent" {% if not edit_yearly or edit_yearly.discount_type == 'percent' %}selected{% endif %}>折數（例如 85 折）</option>
-                            <option value="fixed" {% if edit_yearly and edit_yearly.discount_type == 'fixed' %}selected{% endif %}>固定扣款（例如扣 3000 元）</option>
-                        </select>
-                    </div>
-                    <div id="discount_percent_wrap">
-                        <label>折數：</label>
-                        <div class="input-with-suffix">
-                            <input type="number" name="discount_percent" id="discount_percent" step="1" min="1" max="100"
-                                value="{{ (edit_yearly.discount_ratio * 100)|round|int if edit_yearly and edit_yearly.discount_type == 'percent' else '' }}" placeholder="85">
-                            <span class="input-suffix">折</span>
-                        </div>
-                        <small class="muted">直接輸入數字，例如 85 表示 85 折</small>
-                    </div>
-                    <div id="discount_amount_wrap" class="{% if not edit_yearly or edit_yearly.discount_type != 'fixed' %}hidden-field{% endif %}">
-                        <label>扣減金額（元）：</label>
-                        <input type="number" name="discount_amount" id="discount_amount" step="1" min="1"
-                            value="{{ edit_yearly.discount_amount|int if edit_yearly and edit_yearly.discount_type == 'fixed' and edit_yearly.discount_amount is not none else '' }}" placeholder="例如：3000">
-                        <small class="muted">從官方零售價直接扣減的固定金額</small>
-                    </div>
-                    <div>
-                        <label>CADR (m³/h)：</label>
-                        <input type="number" name="cadr" step="0.1" min="0"
-                            value="{{ edit_yearly.cadr if edit_yearly and edit_yearly.cadr is not none else '' }}" placeholder="選填">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>年度備註：</label>
-                    <textarea name="notes" placeholder="該年度特殊說明（選填）">{{ edit_yearly.notes if edit_yearly and edit_yearly.notes else '' }}</textarea>
-                </div>
-                <div class="discount-preview" id="discount_price_preview">折扣價：—</div>
-                <div style="margin-top: 12px;">
-                    {% if edit_yearly %}
-                        <button type="submit" class="update-btn">更新年度資料</button>
-                        <a href="/?edit_id={{ edit_item.id }}&year={{ filter_year }}{% if keyword %}&keyword={{ keyword }}{% endif %}" class="cancel-link">取消</a>
-                    {% else %}
-                        <button type="submit" class="yearly-btn">新增年度資料</button>
-                    {% endif %}
-                </div>
-            </form>
-        </div>
-        {% endif %}
     </div>
 
-    <!-- 3. 搜尋與清單 -->
     <div class="box">
         <h2>🔍 搜尋冷氣型號</h2>
         <form action="/" method="get">
-            <div class="year-filter">
-                <label style="margin: 0;">資料年份：</label>
-                <select name="year" onchange="this.form.submit()">
-                    {% for y in available_years %}
-                        <option value="{{ y }}" {% if y == filter_year %}selected{% endif %}>{{ y }}</option>
-                    {% endfor %}
-                </select>
-            </div>
             <div class="search-row">
-                <input type="hidden" name="year" value="{{ filter_year }}">
+                <div class="year-filter" style="margin-bottom: 0;">
+                    <label style="margin: 0;">資料年份：</label>
+                    <select name="year">
+                        <option value="all" {% if filter_all %}selected{% endif %}>全部</option>
+                        {% for y in available_years %}
+                            <option value="{{ y }}" {% if not filter_all and y == filter_year %}selected{% endif %}>{{ y }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
                 <input type="text" name="keyword" value="{{ keyword or '' }}" placeholder="輸入品牌或型號關鍵字...">
                 <button type="submit" class="search-btn">搜尋</button>
                 {% if keyword %}
-                    <a href="/?year={{ filter_year }}" class="cancel-link" style="margin-left: 0;">清除搜尋</a>
+                    <a href="/?year={{ filter_year_param }}" class="cancel-link" style="margin-left: 0;">清除搜尋</a>
                 {% endif %}
             </div>
         </form>
@@ -307,6 +201,7 @@
             <table>
                 <thead>
                     <tr>
+                        <th>年份</th>
                         <th>品牌</th>
                         <th>型號</th>
                         <th>冷房能力</th>
@@ -321,43 +216,20 @@
                 <tbody>
                     {% for item in items %}
                     <tr>
+                        <td><span class="year-tag">{{ item.year }}</span></td>
                         <td><span class="brand-tag">{{ item.brand_name }}</span></td>
                         <td><strong>{{ item.model_number }}</strong></td>
                         <td>{{ item.cooling_capacity }} kW</td>
-                        <td>
-                            {% if item.official_retail_price is not none %}
-                                {{ "{:,.0f}".format(item.official_retail_price) }} 元
-                            {% else %}
-                                <span class="muted">—</span>
-                            {% endif %}
-                        </td>
-                        <td>
-                            {% if item.official_retail_price is not none and item.discount_type is not none %}
-                                {{ format_discount_label(item.discount_type, item.discount_ratio, item.discount_amount) }}
-                            {% else %}
-                                <span class="muted">—</span>
-                            {% endif %}
-                        </td>
-                        <td>
-                            {% if item.official_retail_price is not none and item.discount_type is not none %}
-                                <span class="price">{{ "{:,.0f}".format(calc_discount_price(item.official_retail_price, item.discount_type, item.discount_ratio, item.discount_amount)) }} 元</span>
-                            {% else %}
-                                <span class="muted">—</span>
-                            {% endif %}
-                        </td>
-                        <td>
-                            {% if item.yearly_cadr is not none %}
-                                {{ item.yearly_cadr }} m³/h
-                            {% else %}
-                                <span class="muted">—</span>
-                            {% endif %}
-                        </td>
+                        <td>{{ "{:,.0f}".format(item.official_retail_price) }} 元</td>
+                        <td>{{ format_discount_label(item.discount_type, item.discount_ratio, item.discount_amount) }}</td>
+                        <td class="price">{{ "{:,.0f}".format(calc_discount_price(item.official_retail_price, item.discount_type, item.discount_ratio, item.discount_amount)) }} 元</td>
+                        <td>{{ item.cadr if item.cadr is not none else '-' }}{% if item.cadr is not none %} m³/h{% endif %}</td>
                         <td>{{ item.notes or '-' }}</td>
                         <td>
                             <div class="actions">
-                                <a href="/?edit_id={{ item.id }}&year={{ filter_year }}{% if keyword %}&keyword={{ keyword }}{% endif %}" class="edit-link">編輯</a>
-                                <form action="/delete/{{ item.id }}" method="post" onsubmit="return confirm('確定要刪除型號 {{ item.model_number }} 嗎？');" style="margin: 0;">
-                                    <input type="hidden" name="year" value="{{ filter_year }}">
+                                <a href="/?edit_id={{ item.id }}&year={{ filter_year_param }}{% if keyword %}&keyword={{ keyword }}{% endif %}" class="edit-link">編輯</a>
+                                <form action="/delete/{{ item.id }}" method="post" onsubmit="return confirm('確定要刪除 {{ item.model_number }}（{{ item.year }}）嗎？');" style="margin: 0;">
+                                    <input type="hidden" name="filter_year" value="{{ filter_year_param }}">
                                     {% if keyword %}<input type="hidden" name="keyword" value="{{ keyword }}">{% endif %}
                                     <button type="submit" class="delete-btn">刪除</button>
                                 </form>
@@ -366,13 +238,19 @@
                     </tr>
                     {% else %}
                     <tr>
-                        <td colspan="9" style="text-align: center; color: #888; padding: 20px;">查無相關冷氣型號資料</td>
+                        <td colspan="10" style="text-align: center; color: #888; padding: 20px;">查無相關冷氣資料</td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
-        <p class="muted" style="margin-top: 10px; font-size: 14px;">目前顯示 {{ filter_year }} 年度資料；無該年資料的型號，價格欄位顯示「—」。</p>
+        <p class="muted" style="margin-top: 10px; font-size: 14px;">
+            {% if filter_all %}
+                目前顯示全部年份資料；選擇特定年份可縮小範圍。
+            {% else %}
+                目前顯示 {{ filter_year }} 年度資料。
+            {% endif %}
+        </p>
     </div>
 
     <script>
@@ -444,15 +322,6 @@
             percentId: 'discount_percent',
             amountId: 'discount_amount',
             previewId: 'discount_price_preview',
-        });
-        setupDiscountForm({
-            typeId: 'add_discount_type',
-            priceId: 'add_official_retail_price',
-            percentWrapId: 'add_discount_percent_wrap',
-            amountWrapId: 'add_discount_amount_wrap',
-            percentId: 'add_discount_percent',
-            amountId: 'add_discount_amount',
-            previewId: 'add_discount_price_preview',
         });
     </script>
 </body>

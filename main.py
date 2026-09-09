@@ -3,21 +3,35 @@ import sys
 import time
 import threading
 from datetime import datetime
-from typing import Callable
+from typing import Any, Callable
 import sqlite3
 from contextlib import asynccontextmanager
 from typing import Optional
-from urllib.parse import quote
 
 from fastapi import FastAPI, Request, Form, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import ValidationError
+from starlette.middleware.sessions import SessionMiddleware
 
 from database import get_db_connection, init_db
+from models import (
+    ACRecordInput,
+    DISCOUNT_TYPE_FIXED,
+    DISCOUNT_TYPE_PERCENT,
+    calc_discount_price,
+    format_discount_label,
+)
+
+FILTER_YEAR_ALL = "all"
+
+SESSION_SECRET_KEY = os.environ.get(
+    "SESSION_SECRET_KEY",
+    "dev-only-change-in-production-ac-management",
+)
 
 
 def _heartbeat_enabled() -> bool:
-    """桌面 .exe 模式啟用心跳；Docker / 一般 uvicorn 預設關閉。"""
     flag = os.environ.get("ENABLE_HEARTBEAT", "").lower()
     if flag in ("1", "true", "yes"):
         return True
@@ -34,11 +48,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET_KEY)
 templates = Jinja2Templates(directory="templates")
+templates.env.globals["calc_discount_price"] = calc_discount_price
+templates.env.globals["format_discount_label"] = format_discount_label
+templates.env.globals["DISCOUNT_TYPE_PERCENT"] = DISCOUNT_TYPE_PERCENT
+templates.env.globals["DISCOUNT_TYPE_FIXED"] = DISCOUNT_TYPE_FIXED
 
-# ---------------------------------------------------------
-# 💓 心跳包 (Heartbeat) 自動關閉機制
-# ---------------------------------------------------------
 last_heartbeat = time.time()
 _shutdown_callback: Callable[[], None] | None = None
 _monitor_started = False
@@ -46,13 +62,11 @@ _monitor_lock = threading.Lock()
 
 
 def register_shutdown(callback: Callable[[], None]) -> None:
-    """由 run.py 註冊 uvicorn 優雅關閉；未註冊時改走 os._exit。"""
     global _shutdown_callback
     _shutdown_callback = callback
 
 
 def start_heartbeat_monitor() -> None:
-    """啟動心跳監控（lifespan 與 run.py 皆可呼叫，僅啟動一次）。"""
     global _monitor_started, last_heartbeat
     if not _heartbeat_enabled():
         return
@@ -69,7 +83,6 @@ def start_heartbeat_monitor() -> None:
 
 
 def _hard_exit() -> None:
-    """Windows windowed exe 無控制台，SIGINT / 延遲 Timer 皆不可靠。"""
     try:
         if _shutdown_callback is not None:
             _shutdown_callback()
@@ -86,121 +99,114 @@ def _hard_exit() -> None:
     os._exit(0)
 
 
-def _shutdown_process() -> None:
-    """關閉背景程序。"""
-    _hard_exit()
-
-
 def heartbeat_monitor():
-    """背景線程：每 3 秒檢查一次心跳，超過 8 秒沒收到心跳就自動關閉行程"""
     global last_heartbeat
     while True:
         time.sleep(3)
         if time.time() - last_heartbeat > 8:
-            _shutdown_process()
+            _hard_exit()
             break
 
 
-DISCOUNT_TYPE_PERCENT = "percent"
-DISCOUNT_TYPE_FIXED = "fixed"
+def _parse_list_filter_year(
+    raw: Optional[str | int],
+    *,
+    default_year: int,
+) -> tuple[bool, Optional[int]]:
+    if raw is None or str(raw).strip() == "":
+        return False, default_year
+    if str(raw).lower() == FILTER_YEAR_ALL:
+        return True, None
+    return False, int(raw)
 
 
-def _parse_discount_percent(discount_percent: float) -> float:
-    if discount_percent <= 0 or discount_percent > 100:
-        raise ValueError("折數必須介於 1 至 100 之間")
-    return discount_percent / 100
+def _filter_year_query_value(filter_all: bool, filter_year: Optional[int]) -> str | int:
+    if filter_all:
+        return FILTER_YEAR_ALL
+    assert filter_year is not None
+    return filter_year
 
 
-def calc_discount_price(
+def _validation_error_message(exc: ValidationError) -> str:
+    return exc.errors()[0]["msg"]
+
+
+def _parse_record_input(
+    *,
+    year: int,
+    cooling_capacity: float,
     official_retail_price: float,
     discount_type: str,
-    discount_ratio: Optional[float],
-    discount_amount: Optional[float],
-) -> float:
-    if discount_type == DISCOUNT_TYPE_FIXED:
-        if discount_amount is None or discount_amount < 0:
-            raise ValueError("固定扣款金額不可為空")
-        price = official_retail_price - discount_amount
-        if price <= 0:
-            raise ValueError("扣減金額必須小於官方零售價")
-        return price
-
-    if discount_ratio is None:
-        raise ValueError("折數不可為空")
-    return official_retail_price * discount_ratio
-
-
-def format_discount_label(
-    discount_type: str,
-    discount_ratio: Optional[float],
-    discount_amount: Optional[float],
-) -> str:
-    if discount_type == DISCOUNT_TYPE_FIXED:
-        amount = discount_amount or 0
-        return f"扣 {amount:,.0f} 元"
-    ratio = discount_ratio or 0
-    return f"{round(ratio * 100)} 折"
-
-
-def _parse_yearly_discount(
-    discount_type: str,
-    official_retail_price: float,
     discount_percent: Optional[float],
     discount_amount: Optional[float],
-) -> tuple[str, Optional[float], Optional[float]]:
-    if discount_type not in (DISCOUNT_TYPE_PERCENT, DISCOUNT_TYPE_FIXED):
-        raise ValueError("優惠方式無效")
-
-    if discount_type == DISCOUNT_TYPE_FIXED:
-        if discount_amount is None or discount_amount <= 0:
-            raise ValueError("固定扣款金額必須大於 0")
-        if discount_amount >= official_retail_price:
-            raise ValueError("扣減金額必須小於官方零售價")
-        return discount_type, None, discount_amount
-
-    if discount_percent is None:
-        raise ValueError("折數不可為空")
-    return discount_type, _parse_discount_percent(discount_percent), None
-
-
-def _optional_float(value: Optional[str]) -> Optional[float]:
-    if value is None or str(value).strip() == "":
-        return None
-    return float(value)
-
-
-def _optional_int(value: Optional[str]) -> Optional[int]:
-    if value is None or str(value).strip() == "":
-        return None
-    return int(value)
-
-
-templates.env.globals["calc_discount_price"] = calc_discount_price
-templates.env.globals["format_discount_label"] = format_discount_label
-templates.env.globals["DISCOUNT_TYPE_PERCENT"] = DISCOUNT_TYPE_PERCENT
-templates.env.globals["DISCOUNT_TYPE_FIXED"] = DISCOUNT_TYPE_FIXED
+    cadr: Optional[float],
+) -> tuple[int, float, float, str, Optional[float], Optional[float], Optional[float]]:
+    try:
+        record = ACRecordInput(
+            year=year,
+            cooling_capacity=cooling_capacity,
+            official_retail_price=official_retail_price,
+            discount_type=discount_type,  # type: ignore[arg-type]
+            discount_percent=discount_percent,
+            discount_amount=discount_amount,
+            cadr=cadr,
+        )
+    except ValidationError as exc:
+        raise ValueError(_validation_error_message(exc)) from exc
+    db_type, db_ratio, db_amount = record.discount_values()
+    record.calc_discount_price()
+    return (
+        record.year,
+        record.cooling_capacity,
+        record.official_retail_price,
+        db_type,
+        db_ratio,
+        db_amount,
+        record.cadr,
+    )
 
 
-def _build_redirect_url(
-    message: str | None = None,
-    error: str | None = None,
+def _pop_flash(request: Request) -> tuple[Optional[str], Optional[str]]:
+    return (
+        request.session.pop("flash_message", None),
+        request.session.pop("flash_error", None),
+    )
+
+
+def _pop_form_draft(request: Request) -> Optional[dict[str, Any]]:
+    return request.session.pop("form_draft", None)
+
+
+def _redirect_with_session(
+    request: Request,
+    url: str,
+    *,
+    message: Optional[str] = None,
+    error: Optional[str] = None,
+    form_draft: Optional[dict[str, Any]] = None,
+) -> RedirectResponse:
+    if message:
+        request.session["flash_message"] = message
+    if error:
+        request.session["flash_error"] = error
+    if form_draft is not None:
+        request.session["form_draft"] = form_draft
+    return RedirectResponse(url=url, status_code=status.HTTP_303_SEE_OTHER)
+
+
+def _build_home_url(
+    *,
     edit_id: int | None = None,
-    edit_yearly_id: int | None = None,
-    year: int | None = None,
+    year: int | str | None = None,
     keyword: str | None = None,
 ) -> str:
     params: list[str] = []
-    if message:
-        params.append(f"message={quote(message)}")
-    if error:
-        params.append(f"error={quote(error)}")
     if edit_id:
         params.append(f"edit_id={edit_id}")
-    if edit_yearly_id:
-        params.append(f"edit_yearly_id={edit_yearly_id}")
     if year is not None:
         params.append(f"year={year}")
     if keyword:
+        from urllib.parse import quote
         params.append(f"keyword={quote(keyword)}")
     query = "&".join(params)
     return f"/?{query}" if query else "/"
@@ -208,81 +214,81 @@ def _build_redirect_url(
 
 @app.post("/api/ping")
 def ping():
-    """前端心跳接收 API"""
     global last_heartbeat
     last_heartbeat = time.time()
     return {"status": "alive"}
 
 
-# 1. 首頁：列表、搜尋，以及支援帶入待編輯項目 (edit_id)
 @app.get("/", response_class=HTMLResponse)
 def home(
     request: Request,
     keyword: Optional[str] = None,
-    year: Optional[int] = None,
+    year: Optional[str] = None,
     edit_id: Optional[int] = None,
-    edit_yearly_id: Optional[int] = None,
-    message: Optional[str] = None,
-    error: Optional[str] = None,
 ):
+    flash_message, flash_error = _pop_flash(request)
+    form_draft = _pop_form_draft(request)
+
+    if form_draft:
+        edit_id = edit_id or form_draft.get("edit_id")
+        keyword = keyword or form_draft.get("keyword")
+        if year is None and form_draft.get("filter_year") is not None:
+            year = form_draft.get("filter_year")
+
     conn = get_db_connection()
     cursor = conn.cursor()
     current_year = datetime.now().year
-    filter_year = year if year is not None else current_year
+    filter_all, filter_year = _parse_list_filter_year(year, default_year=current_year)
+    filter_year_param = _filter_year_query_value(filter_all, filter_year)
 
     cursor.execute("SELECT * FROM brands ORDER BY id ASC")
     brands = cursor.fetchall()
 
-    cursor.execute("SELECT DISTINCT year FROM ac_model_yearly ORDER BY year DESC")
+    cursor.execute("SELECT DISTINCT year FROM ac_records ORDER BY year DESC")
     available_years = [row["year"] for row in cursor.fetchall()]
-    if filter_year not in available_years:
+    if not filter_all and filter_year not in available_years:
         available_years = sorted(set(available_years + [filter_year]), reverse=True)
 
     base_sql = """
         SELECT
-            ac.id, ac.brand_id, b.name AS brand_name, ac.model_number,
-            ac.cooling_capacity, ac.notes,
-            y.id AS yearly_id, y.year AS yearly_year,
-            y.official_retail_price, y.discount_type, y.discount_ratio,
-            y.discount_amount, y.cadr AS yearly_cadr, y.notes AS yearly_notes
-        FROM ac_models ac
-        JOIN brands b ON ac.brand_id = b.id
-        LEFT JOIN ac_model_yearly y ON y.ac_model_id = ac.id AND y.year = ?
+            r.id, r.brand_id, b.name AS brand_name, r.model_number, r.year,
+            r.cooling_capacity, r.notes, r.official_retail_price,
+            r.discount_type, r.discount_ratio, r.discount_amount, r.cadr
+        FROM ac_records r
+        JOIN brands b ON r.brand_id = b.id
     """
-    params: list = [filter_year]
+    params: list = []
+    conditions: list[str] = []
+
+    if not filter_all:
+        conditions.append("r.year = ?")
+        params.append(filter_year)
 
     if keyword:
         search_pattern = f"%{keyword}%"
-        sql = base_sql + " WHERE b.name LIKE ? OR ac.model_number LIKE ? ORDER BY ac.id DESC"
+        conditions.append("(b.name LIKE ? OR r.model_number LIKE ?)")
         params.extend([search_pattern, search_pattern])
-    else:
-        sql = base_sql + " ORDER BY ac.id DESC"
+
+    sql = base_sql
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+    sql += " ORDER BY r.year DESC, r.id DESC"
 
     cursor.execute(sql, params)
     items = cursor.fetchall()
 
     edit_item = None
-    yearly_records = []
-    edit_yearly = None
     if edit_id:
-        cursor.execute("SELECT * FROM ac_models WHERE id = ?", (edit_id,))
+        cursor.execute(
+            """
+            SELECT r.*, b.name AS brand_name
+            FROM ac_records r
+            JOIN brands b ON r.brand_id = b.id
+            WHERE r.id = ?
+            """,
+            (edit_id,),
+        )
         edit_item = cursor.fetchone()
-        if edit_item:
-            cursor.execute(
-                """
-                SELECT * FROM ac_model_yearly
-                WHERE ac_model_id = ?
-                ORDER BY year DESC
-                """,
-                (edit_id,),
-            )
-            yearly_records = cursor.fetchall()
-            if edit_yearly_id:
-                cursor.execute(
-                    "SELECT * FROM ac_model_yearly WHERE id = ? AND ac_model_id = ?",
-                    (edit_yearly_id, edit_id),
-                )
-                edit_yearly = cursor.fetchone()
 
     conn.close()
 
@@ -294,406 +300,297 @@ def home(
             "items": items,
             "brands": brands,
             "edit_item": edit_item,
-            "yearly_records": yearly_records,
-            "edit_yearly": edit_yearly,
+            "form_draft": form_draft,
             "keyword": keyword,
+            "filter_all": filter_all,
             "filter_year": filter_year,
+            "filter_year_param": filter_year_param,
             "available_years": available_years,
             "current_year": current_year,
-            "message": message,
-            "error": error,
+            "message": flash_message,
+            "error": flash_error,
         },
     )
 
 
-def _insert_yearly_record(
-    cursor: sqlite3.Cursor,
-    ac_model_id: int,
-    data_year: int,
+def _record_form_draft(
+    *,
+    form: str,
+    brand_id: int,
+    model_number: str,
+    year: int,
+    cooling_capacity: float,
+    notes: Optional[str],
     official_retail_price: float,
     discount_type: str,
-    discount_ratio: Optional[float],
+    discount_percent: Optional[float],
     discount_amount: Optional[float],
     cadr: Optional[float],
-    yearly_notes: Optional[str],
-) -> None:
-    calc_discount_price(
-        official_retail_price, discount_type, discount_ratio, discount_amount
-    )
-    cursor.execute(
-        """
-        INSERT INTO ac_model_yearly (
-            ac_model_id, year, official_retail_price,
-            discount_type, discount_ratio, discount_amount, cadr, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            ac_model_id,
-            data_year,
-            official_retail_price,
-            discount_type,
-            discount_ratio,
-            discount_amount,
-            cadr,
-            yearly_notes,
-        ),
-    )
+    filter_year_param: str | int,
+    keyword: Optional[str],
+    edit_id: Optional[int] = None,
+) -> dict[str, Any]:
+    draft: dict[str, Any] = {
+        "form": form,
+        "brand_id": brand_id,
+        "model_number": model_number,
+        "year": year,
+        "cooling_capacity": cooling_capacity,
+        "notes": notes or "",
+        "official_retail_price": official_retail_price,
+        "discount_type": discount_type,
+        "discount_percent": discount_percent,
+        "discount_amount": discount_amount,
+        "cadr": cadr,
+        "filter_year": filter_year_param,
+        "keyword": keyword,
+    }
+    if edit_id is not None:
+        draft["edit_id"] = edit_id
+    return draft
 
 
-# 2. 新增冷氣型號（可一併新增當年度資料）
 @app.post("/add")
-def add_ac_model(
+def add_record(
+    request: Request,
     brand_id: int = Form(...),
     model_number: str = Form(...),
+    year: int = Form(...),
     cooling_capacity: float = Form(...),
+    official_retail_price: float = Form(...),
+    discount_type: str = Form(DISCOUNT_TYPE_PERCENT),
+    discount_percent: Optional[float] = Form(None),
+    discount_amount: Optional[float] = Form(None),
+    cadr: Optional[float] = Form(None),
     notes: Optional[str] = Form(None),
-    data_year: Optional[str] = Form(None),
-    official_retail_price: Optional[str] = Form(None),
-    discount_type: Optional[str] = Form(DISCOUNT_TYPE_PERCENT),
-    discount_percent: Optional[str] = Form(None),
-    discount_amount: Optional[str] = Form(None),
-    cadr: Optional[str] = Form(None),
-    yearly_notes: Optional[str] = Form(None),
-    year: Optional[int] = Form(None),
+    filter_year: Optional[str] = Form(None),
     keyword: Optional[str] = Form(None),
 ):
     conn = get_db_connection()
     cursor = conn.cursor()
     current_year = datetime.now().year
-    parsed_data_year = _optional_int(data_year)
-    parsed_retail_price = _optional_float(official_retail_price)
-    parsed_discount = _optional_float(discount_percent)
-    parsed_discount_amount = _optional_float(discount_amount)
-    parsed_cadr = _optional_float(cadr)
-    selected_discount_type = discount_type or DISCOUNT_TYPE_PERCENT
-    yearly_year = parsed_data_year if parsed_data_year is not None else (
-        year if year is not None else current_year
-    )
-    has_yearly_input = (
-        parsed_retail_price is not None
-        or parsed_discount is not None
-        or parsed_discount_amount is not None
-        or parsed_cadr is not None
-        or bool(yearly_notes and yearly_notes.strip())
+    filter_all, list_filter_year = _parse_list_filter_year(filter_year, default_year=current_year)
+    list_year_param = _filter_year_query_value(filter_all, list_filter_year)
+
+    form_draft = _record_form_draft(
+        form="add",
+        brand_id=brand_id,
+        model_number=model_number,
+        year=year,
+        cooling_capacity=cooling_capacity,
+        notes=notes,
+        official_retail_price=official_retail_price,
+        discount_type=discount_type,
+        discount_percent=discount_percent,
+        discount_amount=discount_amount,
+        cadr=cadr,
+        filter_year_param=list_year_param,
+        keyword=keyword,
     )
 
     try:
-        parsed_discount_type = selected_discount_type
-        parsed_discount_ratio: Optional[float] = None
-        parsed_discount_amount_value: Optional[float] = None
-
-        if has_yearly_input:
-            if parsed_retail_price is None:
-                raise ValueError("填寫年度資料時，官方零售價為必填")
-            (
-                parsed_discount_type,
-                parsed_discount_ratio,
-                parsed_discount_amount_value,
-            ) = _parse_yearly_discount(
-                selected_discount_type,
-                parsed_retail_price,
-                parsed_discount,
-                parsed_discount_amount,
-            )
-
-        cursor.execute(
-            "INSERT INTO ac_models (brand_id, model_number, cooling_capacity, notes) VALUES (?, ?, ?, ?)",
-            (brand_id, model_number, cooling_capacity, notes),
+        parsed = _parse_record_input(
+            year=year,
+            cooling_capacity=cooling_capacity,
+            official_retail_price=official_retail_price,
+            discount_type=discount_type,
+            discount_percent=discount_percent,
+            discount_amount=discount_amount,
+            cadr=cadr,
         )
-        model_id = cursor.lastrowid
-
-        if has_yearly_input:
-            _insert_yearly_record(
-                cursor,
-                model_id,
-                yearly_year,
-                parsed_retail_price,
-                parsed_discount_type,
-                parsed_discount_ratio,
-                parsed_discount_amount_value,
-                parsed_cadr,
-                yearly_notes,
-            )
-
+        cursor.execute(
+            """
+            INSERT INTO ac_records (
+                brand_id, model_number, year, cooling_capacity, notes,
+                official_retail_price, discount_type, discount_ratio,
+                discount_amount, cadr
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                brand_id,
+                model_number.strip(),
+                parsed[0],
+                parsed[1],
+                notes,
+                parsed[2],
+                parsed[3],
+                parsed[4],
+                parsed[5],
+                parsed[6],
+            ),
+        )
         conn.commit()
-        msg = f"成功新增型號：{model_number}"
-        if has_yearly_input:
-            msg += f"（含 {yearly_year} 年度資料）"
-        redirect_url = _build_redirect_url(
-            message=msg,
-            year=yearly_year if has_yearly_input else year,
-            keyword=keyword,
+        return _redirect_with_session(
+            request,
+            _build_home_url(year=year, keyword=keyword),
+            message=f"成功新增：{model_number}（{year}）",
         )
     except ValueError as exc:
         conn.rollback()
-        redirect_url = _build_redirect_url(
+        return _redirect_with_session(
+            request,
+            _build_home_url(year=list_year_param, keyword=keyword),
             error=str(exc),
-            year=year,
-            keyword=keyword,
+            form_draft=form_draft,
         )
     except sqlite3.IntegrityError:
         conn.rollback()
-        if cursor.execute(
-            "SELECT 1 FROM ac_models WHERE model_number = ?", (model_number,)
-        ).fetchone():
-            error = f"型號 {model_number} 已存在，請勿重複新增！"
-        else:
-            error = f"{yearly_year} 年度資料已存在，請改用編輯功能！"
-        redirect_url = _build_redirect_url(
-            error=error,
-            year=year,
-            keyword=keyword,
+        return _redirect_with_session(
+            request,
+            _build_home_url(year=list_year_param, keyword=keyword),
+            error=f"該品牌下 {model_number} 的 {year} 年資料已存在！",
+            form_draft=form_draft,
         )
     finally:
         conn.close()
 
-    return RedirectResponse(url=redirect_url, status_code=status.HTTP_303_SEE_OTHER)
 
-
-# 3. 更新冷氣型號 (Update)
 @app.post("/update/{item_id}")
-def update_ac_model(
+def update_record(
+    request: Request,
     item_id: int,
     brand_id: int = Form(...),
     model_number: str = Form(...),
+    year: int = Form(...),
     cooling_capacity: float = Form(...),
+    official_retail_price: float = Form(...),
+    discount_type: str = Form(DISCOUNT_TYPE_PERCENT),
+    discount_percent: Optional[float] = Form(None),
+    discount_amount: Optional[float] = Form(None),
+    cadr: Optional[float] = Form(None),
     notes: Optional[str] = Form(None),
-    year: Optional[int] = Form(None),
+    filter_year: Optional[str] = Form(None),
     keyword: Optional[str] = Form(None),
 ):
     conn = get_db_connection()
     cursor = conn.cursor()
+    current_year = datetime.now().year
+    filter_all, list_filter_year = _parse_list_filter_year(filter_year, default_year=current_year)
+    list_year_param = _filter_year_query_value(filter_all, list_filter_year)
+
+    form_draft = _record_form_draft(
+        form="edit",
+        edit_id=item_id,
+        brand_id=brand_id,
+        model_number=model_number,
+        year=year,
+        cooling_capacity=cooling_capacity,
+        notes=notes,
+        official_retail_price=official_retail_price,
+        discount_type=discount_type,
+        discount_percent=discount_percent,
+        discount_amount=discount_amount,
+        cadr=cadr,
+        filter_year_param=list_year_param,
+        keyword=keyword,
+    )
+
     try:
+        parsed = _parse_record_input(
+            year=year,
+            cooling_capacity=cooling_capacity,
+            official_retail_price=official_retail_price,
+            discount_type=discount_type,
+            discount_percent=discount_percent,
+            discount_amount=discount_amount,
+            cadr=cadr,
+        )
         cursor.execute(
             """
-            UPDATE ac_models
-            SET brand_id = ?, model_number = ?, cooling_capacity = ?, notes = ?
+            UPDATE ac_records
+            SET brand_id = ?, model_number = ?, year = ?, cooling_capacity = ?, notes = ?,
+                official_retail_price = ?, discount_type = ?, discount_ratio = ?,
+                discount_amount = ?, cadr = ?
             WHERE id = ?
             """,
-            (brand_id, model_number, cooling_capacity, notes, item_id),
+            (
+                brand_id,
+                model_number.strip(),
+                parsed[0],
+                parsed[1],
+                notes,
+                parsed[2],
+                parsed[3],
+                parsed[4],
+                parsed[5],
+                parsed[6],
+                item_id,
+            ),
         )
         conn.commit()
-        redirect_url = _build_redirect_url(
-            message=f"成功更新型號：{model_number}",
-            edit_id=item_id,
-            year=year,
-            keyword=keyword,
+        return _redirect_with_session(
+            request,
+            _build_home_url(edit_id=item_id, year=list_year_param, keyword=keyword),
+            message=f"成功更新：{model_number}（{year}）",
+        )
+    except ValueError as exc:
+        return _redirect_with_session(
+            request,
+            _build_home_url(edit_id=item_id, year=list_year_param, keyword=keyword),
+            error=str(exc),
+            form_draft=form_draft,
         )
     except sqlite3.IntegrityError:
-        redirect_url = _build_redirect_url(
-            error=f"更新失敗：型號 {model_number} 可能與其他紀錄重複！",
-            edit_id=item_id,
-            year=year,
-            keyword=keyword,
+        return _redirect_with_session(
+            request,
+            _build_home_url(edit_id=item_id, year=list_year_param, keyword=keyword),
+            error=f"更新失敗：{model_number} 的 {year} 年資料可能與其他紀錄重複！",
+            form_draft=form_draft,
         )
     finally:
         conn.close()
 
-    return RedirectResponse(url=redirect_url, status_code=status.HTTP_303_SEE_OTHER)
 
-
-# 4. 刪除冷氣型號 (Delete)
 @app.post("/delete/{item_id}")
-def delete_ac_model(
+def delete_record(
+    request: Request,
     item_id: int,
-    year: Optional[int] = Form(None),
+    filter_year: Optional[str] = Form(None),
     keyword: Optional[str] = Form(None),
 ):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM ac_models WHERE id = ?", (item_id,))
+    current_year = datetime.now().year
+    filter_all, list_filter_year = _parse_list_filter_year(filter_year, default_year=current_year)
+    cursor.execute("DELETE FROM ac_records WHERE id = ?", (item_id,))
     conn.commit()
     conn.close()
-    return RedirectResponse(
-        url=_build_redirect_url(message="已成功刪除該筆資料", year=year, keyword=keyword),
-        status_code=status.HTTP_303_SEE_OTHER,
+    return _redirect_with_session(
+        request,
+        _build_home_url(
+            year=_filter_year_query_value(filter_all, list_filter_year),
+            keyword=keyword,
+        ),
+        message="已成功刪除該筆資料",
     )
 
 
-# 5. 快速新增新品牌
 @app.post("/add-brand")
 def add_brand(
+    request: Request,
     brand_name: str = Form(...),
-    year: Optional[int] = Form(None),
+    filter_year: Optional[str] = Form(None),
     keyword: Optional[str] = Form(None),
     edit_id: Optional[int] = Form(None),
 ):
     conn = get_db_connection()
     cursor = conn.cursor()
+    current_year = datetime.now().year
+    filter_all, list_filter_year = _parse_list_filter_year(filter_year, default_year=current_year)
+    list_year_param = _filter_year_query_value(filter_all, list_filter_year)
     try:
         cursor.execute("INSERT INTO brands (name) VALUES (?)", (brand_name.strip(),))
         conn.commit()
-        redirect_url = _build_redirect_url(
+        return _redirect_with_session(
+            request,
+            _build_home_url(edit_id=edit_id, year=list_year_param, keyword=keyword),
             message=f"成功新增品牌：{brand_name}",
-            edit_id=edit_id,
-            year=year,
-            keyword=keyword,
         )
     except sqlite3.IntegrityError:
-        redirect_url = _build_redirect_url(
+        return _redirect_with_session(
+            request,
+            _build_home_url(edit_id=edit_id, year=list_year_param, keyword=keyword),
             error=f"品牌 {brand_name} 已存在！",
-            edit_id=edit_id,
-            year=year,
-            keyword=keyword,
         )
     finally:
         conn.close()
-
-    return RedirectResponse(url=redirect_url, status_code=status.HTTP_303_SEE_OTHER)
-
-
-# 6. 新增年度資料
-@app.post("/models/{model_id}/yearly/add")
-def add_yearly_data(
-    model_id: int,
-    year: int = Form(...),
-    official_retail_price: float = Form(...),
-    discount_type: str = Form(DISCOUNT_TYPE_PERCENT),
-    discount_percent: Optional[float] = Form(None),
-    discount_amount: Optional[float] = Form(None),
-    cadr: Optional[float] = Form(None),
-    notes: Optional[str] = Form(None),
-    filter_year: Optional[int] = Form(None),
-    keyword: Optional[str] = Form(None),
-):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        parsed_type, parsed_ratio, parsed_amount = _parse_yearly_discount(
-            discount_type, official_retail_price, discount_percent, discount_amount
-        )
-        _insert_yearly_record(
-            cursor,
-            model_id,
-            year,
-            official_retail_price,
-            parsed_type,
-            parsed_ratio,
-            parsed_amount,
-            cadr,
-            notes,
-        )
-        conn.commit()
-        redirect_url = _build_redirect_url(
-            message=f"成功新增 {year} 年度資料",
-            edit_id=model_id,
-            year=filter_year,
-            keyword=keyword,
-        )
-    except ValueError as exc:
-        redirect_url = _build_redirect_url(
-            error=str(exc),
-            edit_id=model_id,
-            year=filter_year,
-            keyword=keyword,
-        )
-    except sqlite3.IntegrityError:
-        redirect_url = _build_redirect_url(
-            error=f"{year} 年度資料已存在，請改用編輯功能！",
-            edit_id=model_id,
-            year=filter_year,
-            keyword=keyword,
-        )
-    finally:
-        conn.close()
-
-    return RedirectResponse(url=redirect_url, status_code=status.HTTP_303_SEE_OTHER)
-
-
-# 7. 更新年度資料
-@app.post("/yearly/update/{yearly_id}")
-def update_yearly_data(
-    yearly_id: int,
-    ac_model_id: int = Form(...),
-    year: int = Form(...),
-    official_retail_price: float = Form(...),
-    discount_type: str = Form(DISCOUNT_TYPE_PERCENT),
-    discount_percent: Optional[float] = Form(None),
-    discount_amount: Optional[float] = Form(None),
-    cadr: Optional[float] = Form(None),
-    notes: Optional[str] = Form(None),
-    filter_year: Optional[int] = Form(None),
-    keyword: Optional[str] = Form(None),
-):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        parsed_type, parsed_ratio, parsed_amount = _parse_yearly_discount(
-            discount_type, official_retail_price, discount_percent, discount_amount
-        )
-        calc_discount_price(
-            official_retail_price, parsed_type, parsed_ratio, parsed_amount
-        )
-        cursor.execute(
-            """
-            UPDATE ac_model_yearly
-            SET year = ?, official_retail_price = ?, discount_type = ?,
-                discount_ratio = ?, discount_amount = ?, cadr = ?, notes = ?
-            WHERE id = ? AND ac_model_id = ?
-            """,
-            (
-                year,
-                official_retail_price,
-                parsed_type,
-                parsed_ratio,
-                parsed_amount,
-                cadr,
-                notes,
-                yearly_id,
-                ac_model_id,
-            ),
-        )
-        conn.commit()
-        redirect_url = _build_redirect_url(
-            message=f"成功更新 {year} 年度資料",
-            edit_id=ac_model_id,
-            year=filter_year,
-            keyword=keyword,
-        )
-    except ValueError as exc:
-        redirect_url = _build_redirect_url(
-            error=str(exc),
-            edit_id=ac_model_id,
-            edit_yearly_id=yearly_id,
-            year=filter_year,
-            keyword=keyword,
-        )
-    except sqlite3.IntegrityError:
-        redirect_url = _build_redirect_url(
-            error=f"更新失敗：{year} 年度資料可能與其他紀錄重複！",
-            edit_id=ac_model_id,
-            edit_yearly_id=yearly_id,
-            year=filter_year,
-            keyword=keyword,
-        )
-    finally:
-        conn.close()
-
-    return RedirectResponse(url=redirect_url, status_code=status.HTTP_303_SEE_OTHER)
-
-
-# 8. 刪除年度資料
-@app.post("/yearly/delete/{yearly_id}")
-def delete_yearly_data(
-    yearly_id: int,
-    ac_model_id: int = Form(...),
-    filter_year: Optional[int] = Form(None),
-    keyword: Optional[str] = Form(None),
-):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "DELETE FROM ac_model_yearly WHERE id = ? AND ac_model_id = ?",
-        (yearly_id, ac_model_id),
-    )
-    conn.commit()
-    conn.close()
-    return RedirectResponse(
-        url=_build_redirect_url(
-            message="已成功刪除年度資料",
-            edit_id=ac_model_id,
-            year=filter_year,
-            keyword=keyword,
-        ),
-        status_code=status.HTTP_303_SEE_OTHER,
-    )
