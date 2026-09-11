@@ -24,13 +24,33 @@ jobs:
 
       - name: 4. 安裝專案依賴與 PyInstaller
         run: |
-          uv pip install --system fastapi uvicorn jinja2 python-multipart pyinstaller
+          uv pip install --system fastapi uvicorn jinja2 python-multipart itsdangerous pyinstaller
 
       - name: 5. 執行 PyInstaller 打包 Windows .exe
         run: |
-          pyinstaller --noconfirm --onefile --windowed --add-data "templates;templates" --name "AC_Management" run.py
+          pyinstaller --noconfirm --onefile --windowed --add-data "templates;templates" --hidden-import itsdangerous --name "AC_Management" run.py
 
-      - name: 6. 自動發布 Release 並附上 exe 下載檔
+      - name: 6. Smoke test（確認 exe 可在無額外依賴下啟動）
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath "dist\AC_Management.exe" -PassThru
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 30; $i++) {
+              Start-Sleep -Seconds 1
+              try {
+                $resp = Invoke-WebRequest -Uri "http://127.0.0.1:8501" -UseBasicParsing -TimeoutSec 2
+                if ($resp.StatusCode -eq 200) { $ready = $true; break }
+              } catch {}
+            }
+            if (-not $ready) { throw "exe 無法在 8501 埠回應，可能漏打包依賴" }
+          } finally {
+            if ($proc -and -not $proc.HasExited) {
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+      - name: 7. 自動發布 Release 並附上 exe 下載檔
         uses: softprops/action-gh-release@v2  # 升級至 v2
         with:
           files: dist/AC_Management.exe

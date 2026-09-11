@@ -18,6 +18,9 @@ if getattr(sys, "frozen", False):
 # 桌面版啟用心跳自動關閉；Docker 等環境不設定此變數即維持關閉
 os.environ.setdefault("ENABLE_HEARTBEAT", "1")
 
+# PyInstaller：starlette.middleware.sessions 依賴 itsdangerous，需明確引入以免打包漏掉
+import itsdangerous  # noqa: F401
+
 from main import app, register_shutdown, start_heartbeat_monitor
 
 # 指定通訊埠
